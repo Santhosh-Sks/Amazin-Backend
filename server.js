@@ -49,7 +49,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// MongoDB Connection with better error handling
+// --- START: DATABASE & MODELS ---
 let MONGO_OK = false;
 const MONGO_URI = process.env.MONGO_URI;
 
@@ -66,8 +66,14 @@ const userSchema = new mongoose.Schema({
   resetExpires: { type: Date },
   createdAt: { type: Date, default: Date.now }
 });
-
 const User = mongoose.model('User', userSchema);
+
+// Affiliate Click Schema
+const affiliateClickSchema = new mongoose.Schema({
+  asin: { type: String, required: true, index: true },
+  clickedAt: { type: Date, default: Date.now }
+});
+const AffiliateClick = mongoose.model('AffiliateClick', affiliateClickSchema);
 
 // MongoDB Connection with detailed debugging
 async function connectMongoDB() {
@@ -116,8 +122,10 @@ async function connectMongoDB() {
 }
 // Start MongoDB connection
 connectMongoDB();
+// --- END: DATABASE & MODELS ---
 
-// In-memory fallback for development
+
+// --- START: IN-MEMORY FALLBACK & HELPERS ---
 const inMemoryUsers = new Map();
 
 function cloneAndAttachSave(user) {
@@ -175,8 +183,10 @@ async function findUserById(id) {
   const u = inMemoryUsers.get(id) || null; 
   return u ? cloneAndAttachSave(u) : null; 
 }
+// --- END: IN-MEMORY FALLBACK & HELPERS ---
 
-// SMTP Configuration with better error handling
+
+// --- START: SMTP CONFIGURATION ---
 const SMTP_HOST = process.env.SMTP_HOST;
 const SMTP_SECURE = process.env.SMTP_SECURE === 'true';
 const SMTP_PORT = process.env.SMTP_PORT || (SMTP_SECURE ? '465' : '587');
@@ -251,8 +261,10 @@ async function initializeSMTP() {
 
 // Start SMTP initialization
 initializeSMTP();
+// --- END: SMTP CONFIGURATION ---
 
-// JWT and Auth Helpers
+
+// --- START: AUTH HELPERS & MIDDLEWARE ---
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-key-please-change-in-production';
 
 function signToken(user) { 
@@ -269,11 +281,11 @@ function signToken(user) {
 
 function authMiddleware(req, res, next) { 
   const authHeader = req.headers.authorization; 
-  if (!authHeader) {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' }); 
   }
   
-  const token = authHeader.replace('Bearer ', ''); 
+  const token = authHeader.split(' ')[1]; 
   try { 
     req.user = jwt.verify(token, JWT_SECRET); 
     next(); 
@@ -293,8 +305,10 @@ function adminMiddleware(req, res, next) {
 const ADMIN_EMAILS = process.env.ADMIN_EMAILS 
   ? process.env.ADMIN_EMAILS.split(',').map(s => s.trim()).filter(Boolean) 
   : [];
+// --- END: AUTH HELPERS & MIDDLEWARE ---
 
-// Email Templates
+
+// --- START: EMAIL TEMPLATES & HELPERS ---
 function otpHtmlTemplate(code, minutes) { 
   return `
     <!DOCTYPE html>
@@ -344,6 +358,10 @@ async function sendEmailSafely({ to, subject, text, html }) {
   
   return result; 
 }
+// --- END: EMAIL TEMPLATES & HELPERS ---
+
+
+// --- START: API ROUTES ---
 
 // Health Check
 app.get('/api/health', (req, res) => {
@@ -362,205 +380,86 @@ app.get('/api/health', (req, res) => {
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, name } = req.body || {};
-    
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-
-    // Check if user already exists
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
     const existingUser = await lookupUserByEmail(email);
-    if (existingUser) {
-      return res.status(400).json({ error: 'Email already registered' });
-    }
-
-    // Hash password
+    if (existingUser) return res.status(400).json({ error: 'Email already registered' });
     const passwordHash = await bcrypt.hash(password, 12);
-    
-    // Determine role
     const role = ADMIN_EMAILS.includes(email) ? 'admin' : 'customer';
-    
-    // Create user
-    const user = await createUser({ 
-      email, 
-      passwordHash, 
-      name: name || email.split('@')[0], 
-      role 
-    });
-
-    // Generate OTP
+    const user = await createUser({ email, passwordHash, name: name || email.split('@')[0], role });
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpires = new Date(Date.now() + (Number(process.env.VITE_OTP_EXP_MINUTES || 5) * 60000));
-    
     user.otpCode = otpCode;
     user.otpExpires = otpExpires;
     await user.save();
-
-    // Send OTP email
     let emailResult = null;
     if (transporter) {
       try {
-        emailResult = await sendEmailSafely({ 
-          to: email, 
-          subject: 'Verify Your Amazin Mart Account', 
-          text: `Your verification code is: ${otpCode}`, 
-          html: otpHtmlTemplate(otpCode, Math.max(1, Math.round((otpExpires - Date.now()) / 60000))) 
-        });
+        emailResult = await sendEmailSafely({ to: email, subject: 'Verify Your Amazin Mart Account', text: `Your verification code is: ${otpCode}`, html: otpHtmlTemplate(otpCode, 5) });
         console.log('✅ OTP email sent to:', email);
       } catch (emailError) {
         console.error('❌ Failed to send OTP email:', emailError.message);
       }
     }
-
-    const response = { 
-      success: true, 
-      message: 'Registration successful. Please check your email for verification code.',
-      isAdmin: role === 'admin'
-    };
-    
-    if (emailResult?.previewUrl) {
-      response.previewUrl = emailResult.previewUrl;
-    }
-
+    const response = { success: true, message: 'Registration successful. Please check your email for verification code.', isAdmin: role === 'admin' };
+    if (emailResult?.previewUrl) response.previewUrl = emailResult.previewUrl;
     res.json(response);
-
   } catch (error) { 
     console.error('Registration error:', error); 
-    res.status(500).json({ 
-      error: 'Registration failed', 
-      details: process.env.NODE_ENV !== 'production' ? error.message : undefined 
-    }); 
+    res.status(500).json({ error: 'Registration failed', details: process.env.NODE_ENV !== 'production' ? error.message : undefined }); 
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password, asAdmin } = req.body || {};
-    
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-
-    // Find user
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
     const user = await lookupUserByEmail(email);
-    if (!user) {
-      return res.status(400).json({ error: 'Invalid credentials' });
-    }
-
-    // Verify password
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
     const isValidPassword = await bcrypt.compare(password, user.passwordHash);
-    if (!isValidPassword) {
-      return res.status(400).json({ error: 'Invalid credentials' });
-    }
-
-    // Check admin access if requested
-    if (asAdmin && user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access denied' });
-    }
-
-    // If user is verified, return token
+    if (!isValidPassword) return res.status(400).json({ error: 'Invalid credentials' });
+    if (asAdmin && user.role !== 'admin') return res.status(403).json({ error: 'Admin access denied' });
     if (user.isVerified) {
       const token = signToken(user);
-      return res.json({ 
-        success: true,
-        token, 
-        user: { 
-          id: user._id,
-          email: user.email, 
-          name: user.name, 
-          role: user.role 
-        } 
-      });
+      return res.json({ success: true, token, user: { id: user._id, email: user.email, name: user.name, role: user.role } });
     }
-
-    // Send OTP for unverified users
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpires = new Date(Date.now() + (Number(process.env.VITE_OTP_EXP_MINUTES || 5) * 60000));
-    
     user.otpCode = otpCode;
     user.otpExpires = otpExpires;
     await user.save();
-
     let emailResult = null;
     if (transporter) {
       try {
-        emailResult = await sendEmailSafely({ 
-          to: email, 
-          subject: 'Your Login Verification Code', 
-          text: `Your verification code is: ${otpCode}`, 
-          html: otpHtmlTemplate(otpCode, Math.max(1, Math.round((otpExpires - Date.now()) / 60000))) 
-        });
+        emailResult = await sendEmailSafely({ to: email, subject: 'Your Login Verification Code', text: `Your verification code is: ${otpCode}`, html: otpHtmlTemplate(otpCode, 5) });
         console.log('✅ Login OTP sent to:', email);
       } catch (emailError) {
         console.error('❌ Failed to send login OTP:', emailError.message);
       }
     }
-
-    const response = { 
-      needsVerification: true, 
-      message: 'Please check your email for verification code.' 
-    };
-    
-    if (emailResult?.previewUrl) {
-      response.previewUrl = emailResult.previewUrl;
-    }
-
+    const response = { needsVerification: true, message: 'Please check your email for verification code.' };
+    if (emailResult?.previewUrl) response.previewUrl = emailResult.previewUrl;
     res.json(response);
-
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({
-      error: 'Login failed',
-      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
-    });
+    res.status(500).json({ error: 'Login failed', details: process.env.NODE_ENV !== 'production' ? error.message : undefined });
   }
 });
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
     const { email, code } = req.body || {};
-    
-    if (!email || !code) {
-      return res.status(400).json({ error: 'Email and verification code are required' });
-    }
-
+    if (!email || !code) return res.status(400).json({ error: 'Email and verification code are required' });
     const user = await lookupUserByEmail(email);
-    if (!user) {
-      return res.status(400).json({ error: 'User not found' });
+    if (!user) return res.status(400).json({ error: 'User not found' });
+    if (!user.otpCode || !user.otpExpires || new Date() > user.otpExpires || user.otpCode !== code) {
+      return res.status(400).json({ error: 'Invalid or expired verification code' });
     }
-
-    // Check OTP validity
-    if (!user.otpCode || !user.otpExpires) {
-      return res.status(400).json({ error: 'No verification code found' });
-    }
-
-    if (new Date() > user.otpExpires) {
-      return res.status(400).json({ error: 'Verification code expired' });
-    }
-
-    if (user.otpCode !== code) {
-      return res.status(400).json({ error: 'Invalid verification code' });
-    }
-
-    // Verify user
     user.isVerified = true;
     user.otpCode = undefined;
     user.otpExpires = undefined;
     await user.save();
-
-    // Generate JWT token
     const token = signToken(user);
-
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    });
-
+    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
   } catch (error) {
     console.error('OTP verification error:', error);
     res.status(500).json({ error: 'Verification failed' });
@@ -570,47 +469,27 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 app.post('/api/auth/resend', async (req, res) => {
   try {
     const { email } = req.body || {};
-    
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
-
+    if (!email) return res.status(400).json({ error: 'Email is required' });
     const user = await lookupUserByEmail(email);
-    if (!user) {
-      return res.status(400).json({ error: 'User not found' });
-    }
-
-    // Generate new OTP
+    if (!user) return res.status(400).json({ error: 'User not found' });
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpires = new Date(Date.now() + (Number(process.env.VITE_OTP_EXP_MINUTES || 5) * 60000));
-    
     user.otpCode = otpCode;
     user.otpExpires = otpExpires;
     await user.save();
-
     let emailResult = null;
     if (transporter) {
       try {
-        emailResult = await sendEmailSafely({ 
-          to: email, 
-          subject: 'New Verification Code - Amazin Mart', 
-          text: `Your new verification code is: ${otpCode}`, 
-          html: otpHtmlTemplate(otpCode, Math.max(1, Math.round((otpExpires - Date.now()) / 60000))) 
-        });
+        emailResult = await sendEmailSafely({ to: email, subject: 'New Verification Code - Amazin Mart', text: `Your new verification code is: ${otpCode}`, html: otpHtmlTemplate(otpCode, 5) });
         console.log('✅ Resent OTP to:', email);
       } catch (emailError) {
         console.error('❌ Failed to resend OTP:', emailError.message);
         return res.status(500).json({ error: 'Failed to send verification email' });
       }
     }
-
     const response = { ok: true };
-    if (emailResult?.previewUrl) {
-      response.previewUrl = emailResult.previewUrl;
-    }
-
+    if (emailResult?.previewUrl) response.previewUrl = emailResult.previewUrl;
     res.json(response);
-
   } catch (error) {
     console.error('Resend OTP error:', error);
     res.status(500).json({ error: 'Failed to resend verification code' });
@@ -620,43 +499,57 @@ app.post('/api/auth/resend', async (req, res) => {
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
     const user = await findUserById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        isVerified: user.isVerified
-      }
-    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user: { id: user._id, name: user.name, email: user.email, role: user.role, isVerified: user.isVerified } });
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// Affiliate Routes
+app.post('/api/affiliate/click', async (req, res) => {
+  try {
+    const { asin } = req.body;
+    if (!asin) return res.status(400).json({ error: 'ASIN is required' });
+    await AffiliateClick.create({ asin });
+    res.status(201).json({ success: true, message: 'Click recorded' });
+  } catch (error) {
+    console.error('Affiliate click error:', error);
+    res.status(500).json({ error: 'Failed to record click' });
+  }
+});
+
+app.get('/api/affiliate/count', async (req, res) => {
+  try {
+    const { asin } = req.query;
+    if (!asin) return res.status(400).json({ error: 'ASIN query parameter is required' });
+    const count = await AffiliateClick.countDocuments({ asin });
+    res.json({ asin, count });
+  } catch (error) {
+    console.error('Affiliate count error:', error);
+    res.status(500).json({ error: 'Failed to get count' });
+  }
+});
+
+// --- END: API ROUTES ---
+
+
+// --- START: ERROR HANDLING & SERVER BOOT ---
+
 // Handle 404 routes
 app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  res.status(404).json({ error: `Route not found: ${req.method} ${req.originalUrl}` });
 });
 
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    details: process.env.NODE_ENV !== 'production' ? error.message : undefined
-  });
+  res.status(500).json({ error: 'Internal server error', details: process.env.NODE_ENV !== 'production' ? error.message : undefined });
 });
 
 // Start server
 const PORT = process.env.PORT || 4000;
-
-// Listen on all network interfaces, which is best practice for deployments
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server listening on port ${PORT}`);
   console.log(`   Environment: ${process.env.NODE_ENV}`);
@@ -680,4 +573,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('  POST /api/auth/verify-otp');
   console.log('  POST /api/auth/resend');
   console.log('  GET  /api/auth/me');
+  console.log('  POST /api/affiliate/click');
+  console.log('  GET  /api/affiliate/count');
 });
+// --- END: ERROR HANDLING & SERVER BOOT ---
