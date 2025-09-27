@@ -19,7 +19,7 @@ console.log('SMTP_USER:', process.env.SMTP_USER ? 'Set ✓' : 'Not Set ✗');
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'http://localhost:3001',
+    'https://amazin-frontend.vercel.app',
     'https://amazin-mart.vercel.app'
   ],
   credentials: true
