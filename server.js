@@ -14,16 +14,38 @@ console.log('NODE_ENV:', process.env.NODE_ENV);
 console.log('MONGO_URI:', process.env.MONGO_URI ? 'Set ✓' : 'Not Set ✗');
 console.log('JWT_SECRET:', process.env.JWT_SECRET ? 'Set ✓' : 'Not Set ✗');
 console.log('SMTP_USER:', process.env.SMTP_USER ? 'Set ✓' : 'Not Set ✗');
+console.log('CORS_ORIGIN:', process.env.CORS_ORIGIN || 'Not Set (using defaults)');
 
-// CORS configuration
+// --- START: DYNAMIC CORS CONFIGURATION ---
+const allowedOrigins = [];
+
+// For local development, allow localhost origins
+if (process.env.NODE_ENV !== 'production') {
+  allowedOrigins.push('http://localhost:3000');
+  allowedOrigins.push('http://localhost:5173');
+  console.log('DEV MODE: Allowing localhost origins for CORS.');
+}
+
+// Add the deployed frontend URL(s) from environment variables if they exist
+if (process.env.CORS_ORIGIN) {
+  const originsFromEnv = process.env.CORS_ORIGIN.split(',').map(origin => origin.trim());
+  allowedOrigins.push(...originsFromEnv);
+}
+
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://amazin-frontend.vercel.app',
-    'https://amazin-mart.vercel.app'
-  ],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
+    } else {
+      const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
+      return callback(new Error(msg), false);
+    }
+  },
   credentials: true
 }));
+// --- END: DYNAMIC CORS CONFIGURATION ---
 
 app.use(express.json());
 
@@ -47,7 +69,6 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', userSchema);
 
-// MongoDB Connection with retry logic - FIXED: Removed deprecated options
 // MongoDB Connection with detailed debugging
 async function connectMongoDB() {
   if (!MONGO_URI) {
@@ -635,9 +656,10 @@ app.use((error, req, res, next) => {
 // Start server
 const PORT = process.env.PORT || 4000;
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+// Listen on all network interfaces, which is best practice for deployments
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server listening on port ${PORT}`);
+  console.log(`   Environment: ${process.env.NODE_ENV}`);
   
   if (MONGO_OK) {
     console.log('✅ MongoDB: Connected');
