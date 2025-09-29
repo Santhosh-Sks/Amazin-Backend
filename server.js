@@ -457,18 +457,27 @@ app.post('/api/cors-test', (req, res) => {
 // Auth Routes
 app.post('/api/auth/register', async (req, res) => {
   try {
+    console.log('📝 Registration attempt:', { email: req.body?.email, name: req.body?.name, hasPassword: !!req.body?.password });
     const { email, password, name } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
     const existingUser = await lookupUserByEmail(email);
-    if (existingUser) return res.status(400).json({ error: 'Email already registered' });
+    if (existingUser) {
+      console.log('❌ Registration failed: Email already exists', email);
+      return res.status(400).json({ error: 'Email already registered' });
+    }
+    
+    console.log('🔐 Creating user account for:', email);
     const passwordHash = await bcrypt.hash(password, 12);
     const role = ADMIN_EMAILS.includes(email) ? 'admin' : 'customer';
     const user = await createUser({ email, passwordHash, name: name || email.split('@')[0], role });
+    console.log('✅ User created successfully:', { id: user._id, email: user.email, role: user.role });
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpires = new Date(Date.now() + (Number(process.env.VITE_OTP_EXP_MINUTES || 5) * 60000));
+    console.log('🔢 Generated OTP for', email, '- Code:', otpCode, '- Expires:', otpExpires);
     user.otpCode = otpCode;
     user.otpExpires = otpExpires;
     await user.save();
+    console.log('💾 OTP saved to user record');
     let emailResult = null;
     if (transporter) {
       try {
@@ -478,8 +487,21 @@ app.post('/api/auth/register', async (req, res) => {
         console.error('❌ Failed to send OTP email:', emailError.message);
       }
     }
-    const response = { success: true, message: 'Registration successful. Please check your email for verification code.', isAdmin: role === 'admin' };
+    const response = { 
+      success: true, 
+      needsVerification: true,
+      message: 'Registration successful. Please check your email for verification code.', 
+      isAdmin: role === 'admin',
+      email: email // Include email for frontend to use in OTP verification
+    };
     if (emailResult?.previewUrl) response.previewUrl = emailResult.previewUrl;
+    
+    console.log('✅ Registration successful - Sending response:', { 
+      success: response.success, 
+      needsVerification: response.needsVerification, 
+      email: response.email, 
+      isAdmin: response.isAdmin 
+    });
     res.json(response);
   } catch (error) { 
     console.error('Registration error:', error); 
