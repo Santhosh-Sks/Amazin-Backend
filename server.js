@@ -26,11 +26,19 @@ if (process.env.NODE_ENV !== 'production') {
   console.log('DEV MODE: Allowing localhost origins for CORS.');
 }
 
+// Add deployed frontend URL
+allowedOrigins.push('https://amazin-frontend.vercel.app');
+
 // Add the deployed frontend URL(s) from environment variables if they exist
 if (process.env.CORS_ORIGIN) {
   const originsFromEnv = process.env.CORS_ORIGIN.split(',').map(origin => origin.trim());
   allowedOrigins.push(...originsFromEnv);
 }
+
+console.log('🌐 CORS Configuration:');
+console.log('  Allowed Origins:', allowedOrigins.length > 0 ? allowedOrigins : ['No origin restrictions (allowing all)']);
+console.log('  Credentials Enabled: true');
+console.log('  Max Age: 86400 seconds (24 hours)');
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -43,11 +51,54 @@ app.use(cors({
       return callback(new Error(msg), false);
     }
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Content-Type',
+    'Accept',
+    'Authorization',
+    'Cache-Control',
+    'X-Access-Token'
+  ],
+  exposedHeaders: [
+    'Content-Length',
+    'X-Kuma-Revision'
+  ],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 200
 }));
 // --- END: DYNAMIC CORS CONFIGURATION ---
 
 app.use(express.json());
+
+// Additional CORS headers middleware to ensure headers are always present
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Set CORS headers for all responses
+  if (origin && (allowedOrigins.includes(origin) || !origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  } else if (!origin) {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
+  res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization,Cache-Control,X-Access-Token');
+  res.header('Access-Control-Expose-Headers', 'Content-Length,X-Kuma-Revision');
+  res.header('Access-Control-Max-Age', '86400');
+  
+  next();
+});
+
+// Explicit preflight handler for all OPTIONS requests
+app.options('*', (req, res) => {
+  console.log('📋 Preflight request for:', req.path);
+  res.status(200).send();
+});
 
 // --- START: DATABASE & MODELS ---
 let MONGO_OK = false;
@@ -376,6 +427,33 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// CORS Test Endpoint
+app.get('/api/cors-test', (req, res) => {
+  res.json({
+    message: 'CORS is working correctly!',
+    timestamp: new Date().toISOString(),
+    origin: req.headers.origin || 'no-origin',
+    allowedOrigins: allowedOrigins,
+    corsHeaders: {
+      'Access-Control-Allow-Origin': res.get('Access-Control-Allow-Origin'),
+      'Access-Control-Allow-Credentials': res.get('Access-Control-Allow-Credentials'),
+      'Access-Control-Allow-Methods': res.get('Access-Control-Allow-Methods'),
+      'Access-Control-Allow-Headers': res.get('Access-Control-Allow-Headers')
+    }
+  });
+});
+
+// CORS Test POST Endpoint
+app.post('/api/cors-test', (req, res) => {
+  res.json({
+    message: 'CORS POST request successful!',
+    timestamp: new Date().toISOString(),
+    origin: req.headers.origin || 'no-origin',
+    body: req.body,
+    allowedOrigins: allowedOrigins
+  });
+});
+
 // Auth Routes
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -545,7 +623,24 @@ app.use('*', (req, res) => {
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
-  res.status(500).json({ error: 'Internal server error', details: process.env.NODE_ENV !== 'production' ? error.message : undefined });
+  
+  // Handle CORS errors specifically
+  if (error.message && error.message.includes('CORS policy')) {
+    console.error('❌ CORS Error:', error.message);
+    console.error('   Request Origin:', req.headers.origin);
+    console.error('   Allowed Origins:', allowedOrigins);
+    return res.status(403).json({ 
+      error: 'CORS policy violation', 
+      message: 'This origin is not allowed by the CORS policy',
+      origin: req.headers.origin,
+      allowedOrigins: allowedOrigins
+    });
+  }
+  
+  res.status(500).json({ 
+    error: 'Internal server error', 
+    details: process.env.NODE_ENV !== 'production' ? error.message : undefined 
+  });
 });
 
 // Start server
@@ -568,6 +663,8 @@ app.listen(PORT, '0.0.0.0', () => {
   
   console.log('📋 Available routes:');
   console.log('  GET  /api/health');
+  console.log('  GET  /api/cors-test');
+  console.log('  POST /api/cors-test');
   console.log('  POST /api/auth/register');
   console.log('  POST /api/auth/login');
   console.log('  POST /api/auth/verify-otp');
