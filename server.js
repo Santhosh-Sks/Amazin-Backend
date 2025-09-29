@@ -261,6 +261,7 @@ let transporter = null;
 async function initializeSMTP() {
   if (missingVars.length === 0) {
     try {
+      console.log('🔄 [SMTP] Attempting Gmail configuration...');
       transporter = nodemailer.createTransport({ 
         host: SMTP_HOST, 
         port: Number(SMTP_PORT), 
@@ -269,9 +270,9 @@ async function initializeSMTP() {
           user: SMTP_USER, 
           pass: SMTP_PASS 
         },
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 10000
+        connectionTimeout: 5000, // Reduced timeout
+        greetingTimeout: 5000,
+        socketTimeout: 5000
       });
       
       await transporter.verify();
@@ -279,9 +280,20 @@ async function initializeSMTP() {
       return;
     } catch (error) {
       console.error('❌ [SMTP] Gmail failed:', error.message);
+      console.log('💡 [SMTP] Gmail setup guide:');
+      console.log('   1. Enable 2-Factor Authentication on Gmail');
+      console.log('   2. Generate App Password: https://myaccount.google.com/apppasswords');
+      console.log('   3. Set environment variables:');
+      console.log('      SMTP_HOST=smtp.gmail.com');
+      console.log('      SMTP_PORT=587');
+      console.log('      SMTP_SECURE=false');
+      console.log('      SMTP_USER=your-email@gmail.com');
+      console.log('      SMTP_PASS=your-app-password');
     }
   } else {
     console.warn('⚠️ [SMTP] Missing env vars:', missingVars.join(', '));
+    console.log('💡 [SMTP] To enable email functionality, set these environment variables:');
+    missingVars.forEach(varName => console.log(`   ${varName}=your-value`));
   }
 
   // Fallback to Ethereal for development
@@ -297,16 +309,23 @@ async function initializeSMTP() {
         auth: { 
           user: testAccount.user, 
           pass: testAccount.pass 
-        } 
+        },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 10000
       });
       
       transporter.testAccount = testAccount;
       await transporter.verify();
       console.log('✅ [SMTP] Ethereal test transport ready');
       console.log('📧 [SMTP] Preview emails at: https://ethereal.email');
+      console.log('📧 [SMTP] Test account:', testAccount.user, '/', testAccount.pass);
     } catch (error) {
       console.error('❌ [SMTP] Ethereal fallback failed:', error.message);
+      console.warn('⚠️ [SMTP] Email functionality disabled - OTP codes will be logged to console');
     }
+  } else {
+    console.warn('⚠️ [SMTP] Production mode but no valid email configuration');
   }
 }
 
@@ -486,6 +505,9 @@ app.post('/api/auth/register', async (req, res) => {
       } catch (emailError) {
         console.error('❌ Failed to send OTP email:', emailError.message);
       }
+    } else {
+      console.warn('⚠️ No email transporter available - OTP will only be visible in logs');
+      console.log('🔑 OTP Code for', email, ':', otpCode, '(Valid for 5 minutes)');
     }
     const response = { 
       success: true, 
@@ -496,11 +518,18 @@ app.post('/api/auth/register', async (req, res) => {
     };
     if (emailResult?.previewUrl) response.previewUrl = emailResult.previewUrl;
     
+    // In development mode without email, provide additional debug info
+    if (process.env.NODE_ENV !== 'production' && !transporter) {
+      response.debugOtp = otpCode; // Include OTP in response for development testing
+      response.message += ` [DEV MODE: OTP is ${otpCode}]`;
+    }
+    
     console.log('✅ Registration successful - Sending response:', { 
       success: response.success, 
       needsVerification: response.needsVerification, 
       email: response.email, 
-      isAdmin: response.isAdmin 
+      isAdmin: response.isAdmin,
+      hasDebugOtp: !!response.debugOtp
     });
     res.json(response);
   } catch (error) { 
